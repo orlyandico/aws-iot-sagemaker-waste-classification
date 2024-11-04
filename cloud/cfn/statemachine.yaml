@@ -13,20 +13,8 @@ States:
       Payload.$: $
       FunctionName: ${S3EventHandlerArn}
     OutputPath: $.Payload
-    Next: DetectLabels
-  DetectLabels:
-    Type: Task
-    Resource: arn:aws:states:::aws-sdk:rekognition:detectLabels
-    Parameters:
-      Features:
-        - GENERAL_LABELS
-      Image:
-        S3Object:
-          Bucket.$: $.detail.bucket.name
-          Name.$: $.detail.object.key
-    ResultPath: $.rekognition
-    Next: ImageClassification
-  ImageClassification:
+    Next: DetectLabelsAndImageClassification
+  DetectLabelsAndImageClassification:
     Type: Task
     Resource: arn:aws:states:::lambda:invoke
     Parameters:
