@@ -15,10 +15,6 @@ Parameters:
   LambdaCodeKey:
     Type: String
     Description: S3 key (path) to Lambda function code ZIP file
-  LambdaCodeVersion:
-    Type: String
-    Description: Version of Lambda function code in S3
-    Default: 'latest'
 
 Resources:
   # IAM Role for Lambda
@@ -92,19 +88,9 @@ Resources:
       Code:
         S3Bucket: !Ref LambdaCodeBucket
         S3Key: !Ref LambdaCodeKey
-        S3ObjectVersion: !Ref LambdaCodeVersion
       Runtime: python3.9
       Timeout: 300
       MemorySize: 128
-
-  # S3 Bucket Notification Configuration
-  S3BucketNotification:
-    Type: AWS::S3::BucketNotification
-    Properties:
-      Bucket: !Ref S3BucketName
-      LambdaFunctionConfigurations:
-        - Event: 's3:ObjectCreated:Put'
-          Function: !GetAtt LambdaFunction.Arn
 
   # Lambda Permission for S3
   LambdaPermission:
@@ -114,6 +100,76 @@ Resources:
       FunctionName: !Ref LambdaFunction
       Principal: s3.amazonaws.com
       SourceArn: !Sub 'arn:aws:s3:::${S3BucketName}'
+
+  # S3 Bucket Notification Configuration
+  S3BucketNotification:
+    Type: Custom::S3BucketNotification
+    DependsOn: LambdaPermission
+    Properties:
+      ServiceToken: !GetAtt NotificationFunction.Arn
+      BucketName: !Ref S3BucketName
+      NotificationConfiguration:
+        LambdaFunctionConfigurations:
+          - LambdaFunctionArn: !GetAtt LambdaFunction.Arn
+            Events: 
+              - s3:ObjectCreated:Put
+
+  # Helper Lambda function to set bucket notifications
+  NotificationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt NotificationFunctionRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import json
+
+          def handler(event, context):
+              try:
+                  if event['RequestType'] == 'Delete':
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      return
+
+                  props = event['ResourceProperties']
+                  bucket = props['BucketName']
+                  notification = props['NotificationConfiguration']
+                  
+                  s3 = boto3.client('s3')
+                  s3.put_bucket_notification_configuration(
+                      Bucket=bucket,
+                      NotificationConfiguration=notification
+                  )
+                  
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+              except Exception as e:
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+      Runtime: python3.9
+      Timeout: 30
+      MemorySize: 128
+
+  # IAM Role for the notification helper function
+  NotificationFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3NotificationAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: s3:PutBucketNotification
+                Resource: !Sub 'arn:aws:s3:::${S3BucketName}'
 
 Outputs:
   LambdaArn:
