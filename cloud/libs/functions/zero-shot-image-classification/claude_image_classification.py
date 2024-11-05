@@ -31,6 +31,18 @@ def invoke_claude_classifier(event):
     KEY = event["detail"]["object"]["key"]
     
     # Get image data from S3
+    VALID_EXTENSIONS = {'.jpg', '.jpeg', '.png'}
+    
+    # Check file extension
+    file_extension = os.path.splitext(KEY.lower())[1]
+    if file_extension not in VALID_EXTENSIONS:
+        print(f"Skipping file {KEY} - not a supported image type. Must be JPG, JPEG, or PNG")
+        return {
+            'statusCode': 200,
+            'body': json.dumps(f'File {KEY} ignored - not a supported image type')
+        }
+    
+    # Get image data from S3
     try:
         response = s3.get_object(Bucket=BUCKET_NAME, Key=KEY)
         image_data = response['Body'].read()
