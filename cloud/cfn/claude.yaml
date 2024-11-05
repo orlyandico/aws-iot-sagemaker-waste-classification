@@ -1,0 +1,177 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template for Lambda function with S3 trigger and required IAM roles'
+
+Parameters:
+  S3BucketName:
+    Type: String
+    Description: Name of the existing S3 bucket to use
+  LambdaFunctionName:
+    Type: String
+    Default: claude-waste-image-classifier
+    Description: Name of the Lambda function
+  LambdaCodeBucket:
+    Type: String
+    Description: Bucket containing Lambda function code
+  LambdaCodeKey:
+    Type: String
+    Description: S3 key (path) to Lambda function code ZIP file
+  LambdaCodeVersion:
+    Type: String
+    Description: Version of Lambda function code in S3
+    Default: 'latest'
+
+Resources:
+  # IAM Role for Lambda
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: BedrockAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: VisualEditor0
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:Retrieve
+                Resource: '*'
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:Get*
+                  - s3:List*
+                  - s3:Describe*
+                  - s3-object-lambda:Get*
+                  - s3-object-lambda:List*
+                Resource: '*'
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: logs:CreateLogGroup
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: 
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${LambdaFunctionName}:*'
+
+  # Lambda Function
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Ref LambdaFunctionName
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref LambdaCodeKey
+        S3ObjectVersion: !Ref LambdaCodeVersion
+      Runtime: python3.9
+      Timeout: 300
+      MemorySize: 128
+
+  # Configure notifications for existing bucket
+  BucketNotification:
+    Type: Custom::S3BucketNotification
+    DependsOn: LambdaPermission
+    Properties:
+      ServiceToken: !GetAtt NotificationFunction.Arn
+      BucketName: !Ref S3BucketName
+      NotificationConfiguration:
+        LambdaFunctionConfigurations:
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt LambdaFunction.Arn
+
+  # Custom resource Lambda function to configure notifications
+  NotificationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt NotificationFunctionRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          def handler(event, context):
+              try:
+                  s3 = boto3.client('s3')
+                  props = event['ResourceProperties']
+                  bucket = props['BucketName']
+                  if event['RequestType'] == 'Delete':
+                      s3.put_bucket_notification_configuration(
+                          Bucket=bucket,
+                          NotificationConfiguration={}
+                      )
+                  else:
+                      s3.put_bucket_notification_configuration(
+                          Bucket=bucket,
+                          NotificationConfiguration=props['NotificationConfiguration']
+                      )
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+              except Exception as e:
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+      Runtime: python3.9
+      Timeout: 60
+
+  # IAM role for notification function
+  NotificationFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: S3NotificationAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutBucketNotification
+                Resource: !Sub 'arn:aws:s3:::${S3BucketName}'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+
+  # Lambda Permission for S3
+  LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref LambdaFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub 'arn:aws:s3:::${S3BucketName}'
+
+Outputs:
+  LambdaArn:
+    Description: ARN of the Lambda function
+    Value: !GetAtt LambdaFunction.Arn
+  S3BucketName:
+    Description: Name of the S3 bucket
+    Value: !Ref S3BucketName
+  LambdaRoleArn:
+    Description: ARN of the Lambda execution role
+    Value: !GetAtt LambdaExecutionRole.Arn
