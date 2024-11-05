@@ -13,6 +13,8 @@ REGION_NAME = os.environ.get('S3_BUCKET_REGION', 'eu-west-2')
 bedrock_runtime = boto3.client('bedrock-runtime', REGION_NAME)
 s3 = boto3.client('s3')
 
+iot_data_client = boto3.client('iot-data')
+
 
 def invoke_claude_classifier(event):
     """
@@ -197,6 +199,37 @@ def get_claude_response(messages):
         raise
 
 
+def updateShadowTopic(result):
+    try:
+        payload = {
+            "state": {
+                "desired": {
+                    "classification": result
+                }
+            }
+        }
+        
+        payload = json.dumps(payload).encode('utf-8')
+        
+        # Attempt to publish to IoT Topic
+        try:
+            iot_data_client.publish(
+                topic='$aws/things/DemoWasteBin/shadow/update',
+                qos=0,
+                payload=payload
+            )
+            print(f"Successfully published classification {result} to IoT shadow")
+            return True
+            
+        except Exception as iot_error:
+            print(f"Error publishing to IoT shadow: {str(iot_error)}")
+            # Optionally attempt retry logic here if needed
+            return False
+            
+    except Exception as e:
+        print(f"Error preparing payload: {str(e)}")
+        return False    
+
 
 def lambda_handler(event, context):
 
@@ -211,7 +244,7 @@ def lambda_handler(event, context):
     event["Item_Score"] = item_label["Score"]
     event["Reason"] = reason
 
-#    updateShadowTopic(event["classification"])
+    updateShadowTopic(event["classification"])
 
 
     return event
