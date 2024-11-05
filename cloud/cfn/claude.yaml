@@ -70,13 +70,24 @@ Resources:
                   - logs:PutLogEvents
                 Resource: 
                   - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${LambdaFunctionName}:*'
+        - PolicyName: IoTPublish
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iot:Publish
+                  - iot:Connect
+                Resource:
+                  - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/*'
+                  - !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:client/*'
 
   # Lambda Function
   LambdaFunction:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Ref LambdaFunctionName
-      Handler: index.handler
+      Handler: claude_image_classification.lambda_handler
       Role: !GetAtt LambdaExecutionRole.Arn
       Code:
         S3Bucket: !Ref LambdaCodeBucket
@@ -86,75 +97,14 @@ Resources:
       Timeout: 300
       MemorySize: 128
 
-  # Configure notifications for existing bucket
-  BucketNotification:
-    Type: Custom::S3BucketNotification
-    DependsOn: LambdaPermission
+  # S3 Bucket Notification Configuration
+  S3BucketNotification:
+    Type: AWS::S3::BucketNotification
     Properties:
-      ServiceToken: !GetAtt NotificationFunction.Arn
-      BucketName: !Ref S3BucketName
-      NotificationConfiguration:
-        LambdaFunctionConfigurations:
-          - Event: s3:ObjectCreated:*
-            Function: !GetAtt LambdaFunction.Arn
-
-  # Custom resource Lambda function to configure notifications
-  NotificationFunction:
-    Type: AWS::Lambda::Function
-    Properties:
-      Handler: index.handler
-      Role: !GetAtt NotificationFunctionRole.Arn
-      Code:
-        ZipFile: |
-          import boto3
-          import cfnresponse
-          def handler(event, context):
-              try:
-                  s3 = boto3.client('s3')
-                  props = event['ResourceProperties']
-                  bucket = props['BucketName']
-                  if event['RequestType'] == 'Delete':
-                      s3.put_bucket_notification_configuration(
-                          Bucket=bucket,
-                          NotificationConfiguration={}
-                      )
-                  else:
-                      s3.put_bucket_notification_configuration(
-                          Bucket=bucket,
-                          NotificationConfiguration=props['NotificationConfiguration']
-                      )
-                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
-              except Exception as e:
-                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
-      Runtime: python3.9
-      Timeout: 60
-
-  # IAM role for notification function
-  NotificationFunctionRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      Policies:
-        - PolicyName: S3NotificationAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - s3:PutBucketNotification
-                Resource: !Sub 'arn:aws:s3:::${S3BucketName}'
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: '*'
+      Bucket: !Ref S3BucketName
+      LambdaFunctionConfigurations:
+        - Event: 's3:ObjectCreated:Put'
+          Function: !GetAtt LambdaFunction.Arn
 
   # Lambda Permission for S3
   LambdaPermission:
